@@ -1,0 +1,210 @@
+{
+  "version": 1,
+  "meta": {
+    "title": "tinykv",
+    "description": "Example graph: a small Rust key-value server (illustrative)",
+    "language": "rust"
+  },
+  "groups": [
+    { "id": "cli", "label": "bin / cli", "description": "process entry + config" },
+    { "id": "server", "label": "server", "description": "tcp accept loop, routing, handlers" },
+    { "id": "handlers", "label": "handlers", "parent": "server" },
+    { "id": "storage", "label": "storage", "description": "engine, write-ahead log, memtable" }
+  ],
+  "nodes": [
+    {
+      "id": "main", "label": "main", "kind": "entry", "group": "cli", "importance": 3,
+      "file": "src/main.rs", "line": 9,
+      "signature": "#[tokio::main] async fn main() -> anyhow::Result<()>",
+      "summary": "Parses CLI flags, loads Config, opens the storage engine and hands both to Server::run.",
+      "tags": ["async", "tokio"],
+      "steps": [
+        { "label": "Cli::parse()", "detail": "clap derive → Cli { config_path, port }", "line": 10 },
+        { "label": "Config::load(&cli)", "detail": "file + env overrides", "line": 11 },
+        { "label": "Engine::open(&cfg.data_dir)", "detail": "replays WAL into memtable", "line": 12 },
+        { "label": "Server::new(cfg, engine).run()", "detail": "blocks until SIGINT", "line": 14 }
+      ],
+      "snippet": { "start": 9, "lang": "rust", "highlight": [12, 14], "code": "#[tokio::main]\nasync fn main() -> anyhow::Result<()> {\n    let cli = Cli::parse();\n    let cfg = Config::load(&cli)?;\n    let engine = Arc::new(Engine::open(&cfg.data_dir)?);\n    tracing::info!(port = cfg.port, \"starting tinykv\");\n    Server::new(cfg, engine).run().await\n}" }
+    },
+    {
+      "id": "config", "label": "Config", "kind": "config", "group": "cli",
+      "file": "src/config.rs", "line": 5,
+      "summary": "Runtime settings merged from TOML file and TINYKV_* environment variables.",
+      "fields": [
+        { "name": "port", "type": "u16", "note": "default 7379" },
+        { "name": "data_dir", "type": "PathBuf" },
+        { "name": "wal_sync", "type": "SyncMode", "note": "Always | EveryN(usize) | Never" },
+        { "name": "max_conns", "type": "usize" }
+      ],
+      "methods": [ { "name": "load", "signature": "fn load(cli: &Cli) -> Result<Config>" } ],
+      "snippet": { "start": 5, "lang": "rust", "code": "#[derive(Debug, Deserialize)]\npub struct Config {\n    pub port: u16,\n    pub data_dir: PathBuf,\n    pub wal_sync: SyncMode,\n    pub max_conns: usize,\n}" }
+    },
+    {
+      "id": "server", "label": "Server", "kind": "struct", "group": "server", "importance": 3,
+      "file": "src/server/mod.rs", "line": 12,
+      "summary": "Owns the listener and a shared Router. Accepts TCP connections and spawns one task per connection.",
+      "fields": [
+        { "name": "cfg", "type": "Config" },
+        { "name": "router", "type": "Arc<Router>" },
+        { "name": "limiter", "type": "Semaphore", "note": "caps concurrent connections at cfg.max_conns" }
+      ],
+      "methods": [
+        { "name": "new", "signature": "fn new(cfg: Config, engine: Arc<Engine>) -> Self" },
+        { "name": "run", "signature": "async fn run(self) -> Result<()>" }
+      ],
+      "steps": [
+        { "label": "TcpListener::bind", "detail": "0.0.0.0:{port}" },
+        { "label": "loop accept()", "detail": "acquire semaphore permit" },
+        { "label": "tokio::spawn(Conn::serve)", "detail": "router cloned into task" }
+      ],
+      "snippet": { "start": 31, "lang": "rust", "highlight": [37], "code": "pub async fn run(self) -> Result<()> {\n    let listener = TcpListener::bind((\"0.0.0.0\", self.cfg.port)).await?;\n    loop {\n        let permit = self.limiter.clone().acquire_owned().await?;\n        let (sock, peer) = listener.accept().await?;\n        let router = self.router.clone();\n        tokio::spawn(Conn::new(sock, peer, router).serve(permit));\n    }\n}" }
+    },
+    {
+      "id": "conn", "label": "Conn", "kind": "struct", "group": "server",
+      "file": "src/server/conn.rs", "line": 8,
+      "summary": "One client connection. Decodes RESP-like frames into Command and writes back Response frames.",
+      "fields": [
+        { "name": "framed", "type": "Framed<TcpStream, RespCodec>" },
+        { "name": "peer", "type": "SocketAddr" },
+        { "name": "router", "type": "Arc<Router>" }
+      ],
+      "inputs": [ { "name": "frame", "type": "BytesMut" } ],
+      "outputs": [ { "name": "response", "type": "Response" } ],
+      "snippet": { "start": 24, "lang": "rust", "code": "pub async fn serve(mut self, _permit: OwnedSemaphorePermit) {\n    while let Some(frame) = self.framed.next().await {\n        let resp = match Command::try_from(frame) {\n            Ok(cmd) => self.router.dispatch(cmd).await,\n            Err(e) => Response::Error(e.to_string()),\n        };\n        let _ = self.framed.send(resp).await;\n    }\n}" }
+    },
+    {
+      "id": "command", "label": "Command", "kind": "enum", "group": "server", "importance": 1,
+      "file": "src/server/command.rs", "line": 3,
+      "summary": "Parsed client request.",
+      "fields": [
+        { "name": "Get", "type": "{ key: Bytes }" },
+        { "name": "Put", "type": "{ key: Bytes, val: Bytes }" },
+        { "name": "Del", "type": "{ key: Bytes }" },
+        { "name": "Ping", "type": "" }
+      ]
+    },
+    {
+      "id": "router", "label": "Router", "kind": "struct", "group": "server", "importance": 3,
+      "file": "src/server/router.rs", "line": 6,
+      "summary": "Maps a Command variant to the matching Handler trait object.",
+      "fields": [ { "name": "handlers", "type": "HashMap<Op, Box<dyn Handler>>" } ],
+      "methods": [ { "name": "dispatch", "signature": "async fn dispatch(&self, cmd: Command) -> Response" } ],
+      "snippet": { "start": 20, "lang": "rust", "code": "pub async fn dispatch(&self, cmd: Command) -> Response {\n    match self.handlers.get(&cmd.op()) {\n        Some(h) => h.handle(cmd).await.unwrap_or_else(Response::from),\n        None => Response::Error(\"unknown command\".into()),\n    }\n}" }
+    },
+    {
+      "id": "handler", "label": "Handler", "kind": "trait", "group": "handlers",
+      "file": "src/server/handler.rs", "line": 4,
+      "summary": "Async command handler. Every op implements this and is stored as Box<dyn Handler>.",
+      "methods": [ { "name": "handle", "signature": "async fn handle(&self, cmd: Command) -> Result<Response>" } ],
+      "snippet": { "start": 4, "lang": "rust", "code": "#[async_trait]\npub trait Handler: Send + Sync {\n    async fn handle(&self, cmd: Command) -> Result<Response>;\n}" }
+    },
+    {
+      "id": "get_handler", "label": "GetHandler", "kind": "handler", "group": "handlers",
+      "file": "src/server/handlers/get.rs", "line": 6, "implements": ["Handler"],
+      "summary": "Reads a key: memtable first, then falls back to Response::Nil.",
+      "fields": [ { "name": "engine", "type": "Arc<Engine>" } ],
+      "snippet": { "start": 10, "lang": "rust", "code": "async fn handle(&self, cmd: Command) -> Result<Response> {\n    let Command::Get { key } = cmd else { bail!(\"bad cmd\") };\n    Ok(match self.engine.get(&key) {\n        Some(v) => Response::Bulk(v),\n        None => Response::Nil,\n    })\n}" }
+    },
+    {
+      "id": "put_handler", "label": "PutHandler", "kind": "handler", "group": "handlers", "importance": 3,
+      "file": "src/server/handlers/put.rs", "line": 6, "implements": ["Handler"],
+      "summary": "Writes a key: append to WAL (durability) then insert into memtable (visibility).",
+      "fields": [ { "name": "engine", "type": "Arc<Engine>" } ],
+      "steps": [
+        { "label": "destructure Command::Put", "detail": "key: Bytes, val: Bytes" },
+        { "label": "engine.put(key, val)", "detail": "WAL append + memtable insert" },
+        { "label": "Response::Ok" }
+      ],
+      "snippet": { "start": 10, "lang": "rust", "highlight": [12], "code": "async fn handle(&self, cmd: Command) -> Result<Response> {\n    let Command::Put { key, val } = cmd else { bail!(\"bad cmd\") };\n    self.engine.put(key, val)?;\n    Ok(Response::Ok)\n}" }
+    },
+    {
+      "id": "engine", "label": "Engine", "kind": "store", "group": "storage", "importance": 3,
+      "file": "src/storage/engine.rs", "line": 9,
+      "summary": "Storage facade. Writes go WAL → memtable under one mutex; reads hit the memtable lock-free via ArcSwap.",
+      "fields": [
+        { "name": "wal", "type": "Mutex<Wal>" },
+        { "name": "mem", "type": "ArcSwap<MemTable>" },
+        { "name": "dir", "type": "PathBuf" }
+      ],
+      "methods": [
+        { "name": "open", "signature": "fn open(dir: &Path) -> Result<Engine>" },
+        { "name": "get", "signature": "fn get(&self, key: &[u8]) -> Option<Bytes>" },
+        { "name": "put", "signature": "fn put(&self, key: Bytes, val: Bytes) -> Result<()>" }
+      ],
+      "inputs": [ { "name": "key", "type": "Bytes" }, { "name": "val", "type": "Bytes" } ],
+      "outputs": [ { "name": "value", "type": "Option<Bytes>" } ],
+      "snippet": { "start": 40, "lang": "rust", "highlight": [42, 43], "code": "pub fn put(&self, key: Bytes, val: Bytes) -> Result<()> {\n    let mut wal = self.wal.lock();\n    wal.append(&Record::Put { key: &key, val: &val })?;\n    self.mem.load().insert(key, val);\n    Ok(())\n}" }
+    },
+    {
+      "id": "wal", "label": "Wal", "kind": "struct", "group": "storage",
+      "file": "src/storage/wal.rs", "line": 7,
+      "summary": "Append-only log of length-prefixed, CRC32-checked records. Replayed on startup.",
+      "fields": [
+        { "name": "file", "type": "BufWriter<File>" },
+        { "name": "sync", "type": "SyncMode" },
+        { "name": "since_sync", "type": "usize" }
+      ],
+      "methods": [
+        { "name": "append", "signature": "fn append(&mut self, rec: &Record) -> Result<()>" },
+        { "name": "replay", "signature": "fn replay(path: &Path) -> Result<impl Iterator<Item = Record>>" }
+      ],
+      "snippet": { "start": 30, "lang": "rust", "code": "pub fn append(&mut self, rec: &Record) -> Result<()> {\n    let buf = rec.encode();\n    self.file.write_u32::<LE>(buf.len() as u32)?;\n    self.file.write_u32::<LE>(crc32fast::hash(&buf))?;\n    self.file.write_all(&buf)?;\n    self.maybe_sync()\n}" }
+    },
+    {
+      "id": "memtable", "label": "MemTable", "kind": "struct", "group": "storage",
+      "file": "src/storage/memtable.rs", "line": 5,
+      "summary": "Concurrent ordered map holding the live dataset.",
+      "fields": [ { "name": "map", "type": "SkipMap<Bytes, Bytes>" }, { "name": "bytes", "type": "AtomicUsize" } ]
+    },
+    {
+      "id": "disk", "label": "filesystem", "kind": "external", "importance": 1,
+      "summary": "data_dir/wal.log"
+    }
+  ],
+  "edges": [
+    { "source": "main", "target": "config", "kind": "calls", "label": "Config::load", "payload": "&Cli → Config" },
+    { "source": "main", "target": "engine", "kind": "calls", "label": "Engine::open", "payload": "&Path → Arc<Engine>" },
+    { "source": "main", "target": "server", "kind": "data", "label": "Server::new", "payload": "(Config, Arc<Engine>)" },
+    { "source": "server", "target": "router", "kind": "owns", "payload": "Arc<Router>" },
+    { "source": "server", "target": "conn", "kind": "calls", "label": "spawn per socket", "payload": "TcpStream", "async": true },
+    { "source": "conn", "target": "command", "kind": "data", "label": "decode", "payload": "BytesMut → Command" },
+    { "source": "conn", "target": "router", "kind": "calls", "label": "dispatch", "payload": "Command → Response" },
+    { "source": "router", "target": "handler", "kind": "uses", "label": "dyn Handler" },
+    { "source": "get_handler", "target": "handler", "kind": "impl" },
+    { "source": "put_handler", "target": "handler", "kind": "impl" },
+    { "source": "router", "target": "put_handler", "kind": "calls", "label": "Op::Put", "payload": "Command::Put" },
+    { "source": "router", "target": "get_handler", "kind": "calls", "label": "Op::Get", "payload": "Command::Get" },
+    { "source": "put_handler", "target": "engine", "kind": "writes", "label": "put", "payload": "(Bytes, Bytes)" },
+    { "source": "get_handler", "target": "engine", "kind": "reads", "label": "get", "payload": "&[u8] → Option<Bytes>" },
+    { "source": "engine", "target": "wal", "kind": "writes", "label": "append", "payload": "Record::Put" },
+    { "source": "engine", "target": "memtable", "kind": "writes", "label": "insert", "payload": "(Bytes, Bytes)" },
+    { "source": "wal", "target": "disk", "kind": "writes", "label": "write + fsync", "payload": "[len|crc|bytes]" },
+    { "source": "config", "target": "wal", "kind": "data", "label": "wal_sync", "payload": "SyncMode" }
+  ],
+  "flows": [
+    {
+      "id": "startup", "title": "Startup",
+      "description": "From process start to accepting connections",
+      "steps": [
+        { "node": "main", "note": "Tokio runtime starts main(). CLI flags are parsed with clap." },
+        { "node": "config", "note": "Config::load merges the TOML file with TINYKV_* env vars." },
+        { "node": "engine", "note": "Engine::open replays wal.log into a fresh MemTable so state survives restarts." },
+        { "node": "wal", "note": "Wal::replay walks length-prefixed records, verifying each CRC." },
+        { "node": "server", "note": "Server binds the port and enters the accept loop, one task per socket." }
+      ]
+    },
+    {
+      "id": "put", "title": "PUT request lifecycle",
+      "description": "How bytes on the socket become a durable write",
+      "steps": [
+        { "node": "conn", "note": "Conn::serve pulls a frame off the socket via the RESP codec." },
+        { "node": "command", "note": "The frame is decoded into Command::Put { key, val }." },
+        { "node": "router", "note": "Router::dispatch looks up the handler for Op::Put." },
+        { "node": "put_handler", "note": "PutHandler (impl Handler) destructures the command and calls engine.put." },
+        { "node": "engine", "note": "Under the WAL mutex: append first for durability, then insert for visibility." },
+        { "node": "wal", "note": "The record is framed [len|crc|bytes] and fsynced according to SyncMode." },
+        { "node": "memtable", "note": "Key becomes visible to readers. Response::Ok travels back up to Conn." }
+      ]
+    }
+  ]
+}
