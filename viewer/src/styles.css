@@ -1,4 +1,3 @@
-/* ═════════════════════════ paper theme ═════════════════════════ */
 /* ═════════════════════════ themes ═════════════════════════
    Pastel palette in two strengths: --c-* fill/stroke colours, and the
    *-ink variants (mixed toward --text) for anything that must be read.   */
@@ -32,6 +31,8 @@
   --c-stone: #a69e93;
   --ink-mix: 62%;
   --edge-mix: 78%;
+  --minimap-mask: rgba(247, 244, 239, 0.72);
+  --focus: #8b9be0;
 }
 :root[data-theme='dark'] {
   --bg: #1d1c24;
@@ -63,6 +64,8 @@
   --c-stone: #a8a2b4;
   --ink-mix: 82%;
   --edge-mix: 100%;
+  --minimap-mask: rgba(29, 28, 36, 0.72);
+  --focus: #aab8f6;
   color-scheme: dark;
 }
 :root {
@@ -91,6 +94,12 @@ body {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.35 0 0 0 0 0.27 0 0 0 0 0.15 0 0 0 0.06 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 button { font: inherit; color: inherit; cursor: pointer; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 4px; }
+.cf-search input:focus-visible { outline: none; }
+kbd, .cf-kbd {
+  font-family: var(--mono); font-size: 10.5px; line-height: 1; color: var(--muted);
+  padding: 3px 6px; border-radius: 4px; border: 1px solid var(--line-2); border-bottom-width: 2px; background: var(--panel-2);
+}
 code { font-family: var(--mono); }
 
 /* ═════════════════════════ level of detail ═════════════════════════
@@ -164,7 +173,7 @@ code { font-family: var(--mono); }
 .cf-label-name {
   font-family: var(--mono); font-weight: 600; color: var(--text);
   font-size: clamp(13px, calc(8.5px / var(--z)), 34px); line-height: 1.1; white-space: nowrap;
-  background: color-mix(in srgb, var(--bg) 85%, transparent); padding: 0 3px; border-radius: 3px;
+  background: color-mix(in srgb, var(--bg) 88%, transparent); padding: 1px 5px; border-radius: 4px;
   overflow-wrap: anywhere;
 }
 .cf-node.is-selected .cf-label-name { color: var(--accent-ink); }
@@ -271,30 +280,42 @@ code { font-family: var(--mono); }
 
 /* ═════════════════════════ edges ═════════════════════════ */
 .react-flow__edge-path.cf-edge {
-  stroke-width: calc(1.4px * clamp(1, calc(0.5 / var(--z)), 5));
-  stroke-linecap: round;
-  transition: opacity 0.3s, stroke-width 0.3s;
+  stroke-width: calc(1.5px * clamp(1, calc(0.5 / var(--z)), 5));
+  stroke-linecap: round; stroke-linejoin: round;
+  transition: opacity 0.3s, stroke-width 0.25s;
   fill: none;
 }
+.react-flow__edge:hover .cf-edge:not(.is-dim) { stroke-width: calc(2.4px * clamp(1, calc(0.5 / var(--z)), 5)); }
 .cf-edge.is-animated { stroke-dasharray: 6 6; animation: cf-dash 1.2s linear infinite; }
 .cf-edge.is-active { stroke-width: calc(2.4px * clamp(1, calc(0.5 / var(--z)), 5)); }
-.cf-edge.is-dim { opacity: 0.12; }
+.cf-edge.is-dim { opacity: 0.1; }
 @keyframes cf-dash { to { stroke-dashoffset: -24; } }
 
 .cf-edge-label {
-  position: absolute; pointer-events: all;
-  display: flex; flex-direction: column; align-items: center; gap: 1px;
-  padding: 2px 8px; border-radius: 3px;
-  background: var(--card); border: 1px solid color-mix(in srgb, var(--edge) 40%, var(--line));
-  font-size: 10.5px; color: var(--edge-ink); white-space: nowrap;
-  box-shadow: 1px 2px 0 rgb(var(--sh) / 0.06);
-  transition: opacity 0.3s, transform 0.4s var(--spring);
+  position: absolute; pointer-events: all; cursor: default;
+  display: flex; flex-direction: column; align-items: center; gap: 0;
+  padding: 1px 8px 2px; border-radius: 999px;
+  background: color-mix(in srgb, var(--card) 92%, transparent);
+  border: 1px solid color-mix(in srgb, var(--edge) 35%, var(--line));
+  color: var(--edge-ink); white-space: nowrap; line-height: 1.25;
+  box-shadow: 0 1px 2px rgb(var(--sh) / 0.06);
+  transition: opacity 0.3s, border-color 0.2s, box-shadow 0.2s;
 }
-.cf-edge-label.is-dim { opacity: 0.1 !important; }
-.cf-edge-label.is-active { border-color: var(--edge-ink); }
-.cf-edge-kind { font-family: var(--serif); font-style: italic; font-size: 12px; }
-.cf-edge-payload { color: var(--muted); font-size: 10px; }
-.cf-edge-async { font-size: 9px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--faint); }
+/* payload line collapses when zoomed out instead of leaving an empty box */
+.cf-edge-label:has(.cf-edge-payload) { border-radius: 9px; }
+.cf-edge-payload {
+  color: var(--muted); font-size: 10px; overflow: hidden;
+  max-height: clamp(0px, calc((var(--z) - 0.62) * 80px), 16px);
+  opacity: clamp(0, calc((var(--z) - 0.62) * 5), 1);
+}
+.cf-edge-label:hover, .cf-edge-label.is-active { border-color: var(--edge-ink); box-shadow: 0 2px 8px -2px rgb(var(--sh) / 0.25); z-index: 2; }
+.cf-edge-label:hover .cf-edge-payload, .cf-edge-label.is-active .cf-edge-payload { max-height: 16px; opacity: 1; }
+.cf-edge-label.is-dim { opacity: 0.08 !important; }
+/* labels ELK couldn't reserve space for: only when zoomed right in, or when their edge is lit */
+.cf-edge-label.is-floating { opacity: clamp(0, calc((var(--z) - 0.95) * 5), 1); }
+.cf-edge-label.is-floating.is-active, .cf-edge-label.is-floating:hover { opacity: 1; }
+.cf-edge-kind { font-family: var(--serif); font-style: italic; font-size: 12px; display: inline-flex; align-items: baseline; gap: 5px; }
+.cf-edge-async { font-family: var(--sans); font-style: normal; font-size: 8.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--faint); }
 
 /* ═════════════════════════ chrome ═════════════════════════ */
 .cf-toolbar, .cf-flows, .cf-legend, .cf-tour {
@@ -309,18 +330,23 @@ code { font-family: var(--mono); }
 .cf-select, .cf-search input { background: var(--card); border: 1px solid var(--line-2); color: var(--text); border-radius: 6px; height: 30px; padding: 0 10px; font: inherit; font-size: 12.5px; }
 .cf-search { position: relative; display: flex; align-items: center; color: var(--faint); }
 .cf-search svg { position: absolute; left: 9px; pointer-events: none; }
-.cf-search input { padding-left: 28px; width: 210px; outline: none; }
-.cf-search input:focus { border-color: var(--text); }
+.cf-search input { padding-left: 28px; padding-right: 30px; width: 220px; outline: none; transition: border-color 0.2s, box-shadow 0.2s, width 0.35s var(--spring); }
+.cf-search input:focus { border-color: var(--focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 22%, transparent); width: 260px; }
+.cf-search .cf-kbd { position: absolute; right: 8px; pointer-events: none; }
 .cf-results { position: absolute; top: 36px; left: 0; width: 340px; list-style: none; margin: 0; padding: 4px; background: var(--card); border: 1px solid var(--line-2); border-radius: 6px; box-shadow: var(--shadow); animation: cf-rise 0.45s var(--spring) both; }
 .cf-results button { width: 100%; display: flex; align-items: center; gap: 8px; text-align: left; padding: 7px 8px; background: none; border: 0; border-radius: 4px; font-size: 12.5px; font-family: var(--mono); }
-.cf-results button:hover { background: var(--panel-2); }
+.cf-results button:hover, .cf-results button.on { background: var(--panel-2); }
+.cf-results-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cf-results em { font-family: var(--serif); font-size: 12px; color: var(--muted); }
 .cf-results small { margin-left: auto; color: var(--faint); font-size: 10.5px; }
+.cf-results-empty { padding: 10px; font-family: var(--serif); font-style: italic; font-size: 13px; color: var(--muted); }
 .cf-dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
 .cf-seg { display: flex; background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 6px; padding: 2px; }
 .cf-seg button { background: none; border: 0; padding: 4px 7px; border-radius: 4px; color: var(--muted); display: grid; place-items: center; }
+.cf-seg button:hover:not(.on) { color: var(--text); }
 .cf-seg button.on { background: var(--card); color: var(--text); box-shadow: 0 1px 2px rgb(var(--sh) / 0.15); }
 .cf-icon-btn { display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 6px; background: var(--card); border: 1px solid var(--line-2); color: var(--muted); text-decoration: none; flex: none; }
-.cf-icon-btn:hover { color: var(--text); border-color: var(--text); }
+.cf-icon-btn:hover { color: var(--text); border-color: color-mix(in srgb, var(--text) 45%, var(--line-2)); background: var(--panel-2); }
 
 .cf-flows { top: 54px !important; display: flex; flex-direction: column; gap: 5px; width: 230px; padding: 10px; border-radius: 8px; }
 .cf-flows .cf-sec { margin-bottom: 2px; }
@@ -328,14 +354,15 @@ code { font-family: var(--mono); }
 .cf-flows button span { font-family: var(--serif); font-size: 15px; }
 .cf-flows button small { color: var(--faint); font-size: 10.5px; font-family: var(--mono); }
 .cf-flows button:hover { border-color: var(--line-2); }
-.cf-flows button.on { border-color: var(--ochre); background: color-mix(in srgb, var(--ochre) 8%, var(--card)); }
+.cf-flows button.on { border-color: var(--ochre); background: color-mix(in srgb, var(--ochre) 10%, var(--card)); box-shadow: inset 3px 0 0 var(--ochre); }
+.cf-flows button.on small { color: color-mix(in srgb, var(--ochre) 70%, var(--text)); }
 
 .cf-legend { left: 52px !important; display: flex; gap: 2px; flex-wrap: wrap; max-width: 60vw; padding: 4px; border-radius: 8px; }
 .cf-legend button { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 4px; background: none; border: 0; font-family: var(--serif); font-style: italic; font-size: 13px; color: var(--muted); }
 .cf-legend button:hover { background: var(--panel-2); color: var(--text); }
 .cf-legend button.off { opacity: 0.35; text-decoration: line-through; }
 
-.cf-tour { width: min(580px, 90vw); padding: 12px 16px; border-radius: 8px; border-top: 3px solid var(--ochre); animation: cf-rise 0.6s var(--spring) both; }
+.cf-tour { width: min(580px, 90vw); margin-bottom: 64px !important; padding: 12px 16px; border-radius: 8px; border-top: 3px solid var(--ochre); animation: cf-rise 0.6s var(--spring) both; }
 .cf-tour-head { display: flex; align-items: center; gap: 10px; }
 .cf-tour-title { font-family: var(--serif); font-style: italic; font-size: 14px; color: var(--ochre); flex: 1; }
 .cf-tour-count { font-size: 11px; color: var(--faint); font-family: var(--mono); }
@@ -393,9 +420,13 @@ code { font-family: var(--mono); }
 .cf-conn code { margin-left: auto; font-size: 11px; color: var(--muted); }
 
 .cf-loading, .cf-empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-family: var(--serif); font-style: italic; font-size: 17px; }
+.cf-loading { display: flex; justify-content: center; align-items: center; gap: 12px; }
+.cf-spinner { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--line-2); border-top-color: var(--c-coral); animation: cf-spin-plain 0.8s linear infinite; }
+@keyframes cf-spin-plain { to { transform: rotate(360deg); } }
 
 .react-flow__controls { box-shadow: var(--shadow) !important; border-radius: 6px; overflow: hidden; border: 1px solid var(--line-2); }
-.react-flow__controls-button { background: var(--panel) !important; border-color: var(--line) !important; color: var(--muted) !important; fill: var(--muted) !important; }
+.react-flow__controls-button { background: var(--panel) !important; border-color: var(--line) !important; color: var(--muted) !important; fill: var(--muted) !important; transition: background 0.2s, color 0.2s; }
+.react-flow__controls-button:hover { background: var(--panel-2) !important; color: var(--text) !important; }
 .react-flow__minimap { background: var(--panel) !important; border: 1px solid var(--line-2); border-radius: 8px; overflow: hidden; box-shadow: var(--shadow); transition: right 0.5s var(--spring); }
 
 /* ═════════════════════════ motion ═════════════════════════ */
@@ -407,9 +438,10 @@ code { font-family: var(--mono); }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: 1ms !important; transition-duration: 1ms !important; } }
 .cf-hover:hover .cf-card { border-color: var(--accent); }
 .cf-ins-body, .cf-ins-code pre { scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
-body { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 0.35 0 0 0 0 0.27 0 0 0 0 0.15 0 0 0 0.05 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E"); }
-:root[data-theme='dark'] body { background-image: none; }
 .react-flow__controls-button svg { fill: currentColor; }
 .react-flow__minimap-mask { fill: color-mix(in srgb, var(--bg) 75%, transparent); }
 .cf-hover .cf-card { overflow: visible; }
 .cf-hover .cf-head { position: sticky; top: 0; z-index: 1; background: var(--card); border-radius: 6px 6px 0 0; }
+/* keyboard focus on a node: ring the circle, not the square node box */
+.react-flow__node-code:focus-visible { outline: none; }
+.react-flow__node-code:focus-visible .cf-orb-core { outline: 2px solid var(--focus); outline-offset: 4px; }

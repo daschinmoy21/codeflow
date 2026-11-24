@@ -49,6 +49,9 @@ function App() {
   const writeHash = (g: string, n: string | null) => {
     const p = new URLSearchParams({ g })
     if (n) p.set('n', n)
+    // view preferences survive node/graph changes
+    const cur = new URLSearchParams(location.hash.slice(1))
+    for (const k of ['dir', 'theme']) { const v = cur.get(k); if (v) p.set(k, v) }
     history.replaceState(null, '', `#${p}`)
   }
   useEffect(() => { document.title = `${graphs.get(graphId)?.meta.title ?? 'Codeflow'} · codeflow` }, [graphId])
