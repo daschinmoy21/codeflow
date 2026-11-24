@@ -25,11 +25,16 @@ function clipToCircle(end: Point, next: Point, c: Circle | undefined): Point {
   if (horizontal) {
     const dy = Math.min(Math.abs(end.y - c.cy), c.r * 0.92)
     const dx = Math.sqrt(c.r * c.r - dy * dy)
-    return { x: c.cx + (next.x > c.cx ? dx : -dx), y: end.y }
+    let x = c.cx + (next.x > c.cx ? dx : -dx)
+    // never slide past the first bend, or the segment would fold back on itself
+    if ((next.x - end.x) * (next.x - x) <= 0) x = next.x - Math.sign(next.x - end.x) * 2
+    return { x, y: end.y }
   }
   const dx = Math.min(Math.abs(end.x - c.cx), c.r * 0.92)
   const dy = Math.sqrt(c.r * c.r - dx * dx)
-  return { x: end.x, y: c.cy + (next.y > c.cy ? dy : -dy) }
+  let y = c.cy + (next.y > c.cy ? dy : -dy)
+  if ((next.y - end.y) * (next.y - y) <= 0) y = next.y - Math.sign(next.y - end.y) * 2
+  return { x: end.x, y }
 }
 
 /** Polyline → SVG path with rounded corners. */

@@ -33,6 +33,7 @@ export interface NodeBox {
 }
 
 const GROUP_PREFIX = '__group__'
+const EDGE_PREFIX = '__edge__'
 
 /** Stable id shared by the layout and the rendered edge. */
 export const edgeId = (e: CodeEdge, i: number) => e.id ?? `e${i}`
@@ -144,7 +145,8 @@ export async function layoutGraph(
     if (e.source === e.target || !nodeGroup.has(e.source) || !nodeGroup.has(e.target)) continue
     const container = lca(e.source, e.target)
     ;(container.edges ??= []).push({
-      id: edgeId(e, i),
+      // ELK ids share one namespace with nodes/groups; keep edges in their own
+      id: EDGE_PREFIX + i,
       sources: [e.source],
       targets: [e.target],
       labels: [{ text: e.label ?? '', ...edgeLabelSize(e), layoutOptions: { 'elk.edgeLabels.placement': 'CENTER' } }],
@@ -187,7 +189,8 @@ export async function layoutGraph(
       // ELK skips some labels (it leaves them at the container origin); keep a label only if it hugs the route
       const labelPlaced = !!label && distToPolyline(label, points) <= (l?.height ?? 20) / 2 + 16
       if (!labelPlaced) label = fallbackLabelPoint(points, horizontal)
-      result.edges.set(e.id, { points, label, labelPlaced })
+      const src = graph.edges[Number(e.id.slice(EDGE_PREFIX.length))]
+      if (src) result.edges.set(edgeId(src, Number(e.id.slice(EDGE_PREFIX.length))), { points, label, labelPlaced })
     }
     for (const c of n.children ?? []) collectEdges(c)
   }

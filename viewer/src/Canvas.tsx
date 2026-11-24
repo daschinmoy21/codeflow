@@ -80,7 +80,10 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
     graph.nodes.map((n): CodeFlowNode => ({ id: n.id, type: 'code', position: { x: 0, y: 0 }, data: { node: n, order: 0 } })),
   )
 
+  // only the newest layout request may commit (direction can be toggled mid-layout)
+  const layoutSeq = useRef(0)
   const runLayout = useCallback(async (dir: Direction) => {
+    const seq = ++layoutSeq.current
     // ELK gets the bare circle plus the size of its text label, which it keeps clear of edges.
     const boxes = new Map<string, NodeBox>()
     for (const n of graph.nodes) {
@@ -94,6 +97,7 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
       }
     }
     const res = await layoutGraph(graph, boxes, dir)
+    if (seq !== layoutSeq.current) return
     const circ = new Map<string, Circle>()
     for (const [id, p] of res.nodes) {
       const d = boxes.get(id)!.d
@@ -213,6 +217,9 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
     return n.className === cls && n.selected === sel ? n : { ...n, className: cls, selected: sel }
   }), [nodes, focusSet, selectedId])
 
+  // reuse each edge object while its inputs are unchanged, so hovering one node
+  // only re-renders the edges that touch it (memoised FlowEdgeView)
+  const edgeCache = useRef(new Map<string, FlowEdge>())
   const edges = useMemo((): FlowEdge[] => {
     const tourPairs = new Set<string>()
     if (flow) for (let i = 0; i < flow.steps.length - 1; i++) {
@@ -227,13 +234,22 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
       // hovering only emphasises a node's edges; selecting or touring also dims the rest
       const dim = (flow || selectedId) ? !active : false
       const free = moved.has(e.source) || moved.has(e.target)
-      return {
+      const hidden = hiddenKinds.has(kind)
+      const route = free ? undefined : routes.get(id)
+      const src = circles.get(e.source)
+      const tgt = circles.get(e.target)
+      const prev = edgeCache.current.get(id)
+      const d = prev?.data
+      if (prev && d && d.edge === e && d.active === active && d.dim === dim && d.route === route && d.src === src && d.tgt === tgt && prev.hidden === hidden) return prev
+      const next: FlowEdge = {
         id, source: e.source, target: e.target, type: 'flow',
-        hidden: hiddenKinds.has(kind),
+        hidden,
         zIndex: active ? 5 : 0,
         markerEnd: { type: MarkerType.ArrowClosed, color: EDGE_META[kind]?.color ?? '#888', width: 14, height: 14, markerUnits: 'userSpaceOnUse' },
-        data: { edge: e, active, dim, route: free ? undefined : routes.get(id), src: circles.get(e.source), tgt: circles.get(e.target) },
+        data: { edge: e, active, dim, route, src, tgt },
       }
+      edgeCache.current.set(id, next)
+      return next
     })
   }, [graph, hiddenKinds, flow, selectedId, hover, routes, circles, moved])
 
@@ -253,11 +269,12 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
 
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
-      const typing = (ev.target as HTMLElement)?.tagName === 'INPUT'
+      const t = ev.target as HTMLElement | null
+      const typing = !!t && (['INPUT', 'TEXTAREA', 'SELECT'].includes(t.tagName) || t.isContentEditable)
       if (ev.key === 'Escape') { if (typing) (ev.target as HTMLElement).blur(); else if (flow) setFlowId(null); else select(null) }
       if (typing) return
       if (ev.key === '/') { ev.preventDefault(); searchRef.current?.focus() }
-      if ((ev.key === 'f' || ev.key === 'F') && !ev.metaKey && !ev.ctrlKey) void rf.fitView({ padding: FIT_PADDING, duration: 500 })
+      if ((ev.key === 'f' || ev.key === 'F') && !ev.metaKey && !ev.ctrlKey && !ev.altKey) void rf.fitView({ padding: FIT_PADDING, duration: 500 })
       if (flow && ev.key === 'ArrowRight') setStepIdx((i) => Math.min(i + 1, flow.steps.length - 1))
       if (flow && ev.key === 'ArrowLeft') setStepIdx((i) => Math.max(i - 1, 0))
     }
@@ -330,9 +347,9 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
                 aria-label="Search nodes"
                 onChange={(e) => { setQuery(e.target.value); setCursor(0) }}
                 onKeyDown={(e) => {
-                  if (e.key === 'ArrowDown') { e.preventDefault(); setCursor((c) => Math.min(c + 1, results.length - 1)) }
+                  if (e.key === 'ArrowDown') { e.preventDefault(); setCursor((c) => Math.max(0, Math.min(c + 1, results.length - 1))) }
                   if (e.key === 'ArrowUp') { e.preventDefault(); setCursor((c) => Math.max(c - 1, 0)) }
-                  if (e.key === 'Enter' && results[cursor]) { select(results[cursor].id, true); setQuery(''); e.currentTarget.blur() }
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing && results[cursor]) { select(results[cursor].id, true); setQuery(''); e.currentTarget.blur() }
                 }}
               />
               {!query && <kbd className="cf-kbd">/</kbd>}
