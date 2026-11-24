@@ -8,8 +8,6 @@ export type CodeFlowNode = Node<{ node: CodeNode; order: number }, 'code'>
 
 /** Circle diameter per importance (3 = core path). */
 export const DIAMETER = { 1: 52, 2: 68, 3: 86 } as const
-/** Space reserved around the circle for the label / micro text during layout. */
-export const LABEL_BOX = { RIGHT: { w: 190, h: 112 }, DOWN: { w: 230, h: 40 } } as const
 
 // Level of detail is CSS-driven from --z (see styles.css):
 //   macro  -> circle + big label

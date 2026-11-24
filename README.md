@@ -63,7 +63,8 @@ With no `CODEFLOW_GRAPHS`, it shows the bundled example (`viewer/graphs/example.
 made-up Rust key-value server).
 
 Deep links: `#g=<graph>&n=<node>` selects a node, `#flow=<id>` starts a tour, and
-`#theme=light|dark` forces a theme.
+`#theme=light|dark` forces a theme, and `#dir=down` starts in the top→bottom layout. Press `/` to search
+(↑/↓ + Enter to pick a result), `F` to fit the view, `←`/`→` to step through a tour and `Esc` to close.
 
 ## Layout
 

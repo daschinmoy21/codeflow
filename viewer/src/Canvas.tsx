@@ -6,13 +6,13 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ArrowDown, ArrowRight, ChevronLeft, ChevronRight, Footprints, Maximize, Moon, Search, Sun, X } from 'lucide-react'
 import type { CodeGraph, EdgeKind } from './types'
-import { layoutGraph, type Direction } from './lib/layout'
+import { edgeId, layoutGraph, type Direction, type EdgeRoute, type NodeBox } from './lib/layout'
 import { ViewContext, type ViewState } from './lib/context'
 import { EDGE_META, KIND_META, groupColor, resolveColor, type ThemeName } from './lib/theme'
-import { CodeNodeView, DIAMETER, LABEL_BOX, type CodeFlowNode } from './nodes/CodeNodeView'
+import { CodeNodeView, DIAMETER, type CodeFlowNode } from './nodes/CodeNodeView'
 import { NodeCard } from './components/NodeCard'
 import { GroupNodeView, type GroupFlowNode } from './nodes/GroupNodeView'
-import { FlowEdgeView, type FlowEdge } from './edges/FlowEdgeView'
+import { FlowEdgeView, type Circle, type FlowEdge } from './edges/FlowEdgeView'
 import { Inspector } from './components/Inspector'
 
 const nodeTypes = { code: CodeNodeView, cluster: GroupNodeView }
@@ -20,6 +20,8 @@ const edgeTypes = { flow: FlowEdgeView }
 type AnyNode = CodeFlowNode | GroupFlowNode
 
 const INSPECTOR_W = 560
+// keep fitted graphs clear of the toolbar, flows panel, legend and minimap
+const FIT_PADDING = { top: '96px', right: '72px', bottom: '84px', left: '72px' } as const
 
 interface Props {
   graph: CodeGraph
@@ -38,13 +40,18 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
   const updateInternals = useUpdateNodeInternals()
   const wrapRef = useRef<HTMLDivElement>(null)
 
-  const [direction, setDirection] = useState<Direction>('RIGHT')
+  const [direction, setDirection] = useState<Direction>(() => (new URLSearchParams(location.hash.slice(1)).get('dir') === 'down' ? 'DOWN' : 'RIGHT'))
   const [laidOut, setLaidOut] = useState(false)
+  const [routes, setRoutes] = useState<Map<string, EdgeRoute>>(new Map())
+  const [circles, setCircles] = useState<Map<string, Circle>>(new Map())
+  // nodes the user dragged away from the layout: their edges fall back to free curves
+  const [moved, setMoved] = useState<Set<string>>(new Set())
   const [selectedId, setSelectedId] = useState<string | null>(initialNode ?? null)
   const [flowId, setFlowId] = useState<string | null>(null)
   const [stepIdx, setStepIdx] = useState(0)
   const [hiddenKinds, setHiddenKinds] = useState<Set<EdgeKind>>(new Set())
   const [query, setQuery] = useState('')
+  const [cursor, setCursor] = useState(0)
   const searchRef = useRef<HTMLInputElement>(null)
   const [hover, setHover] = useState<string | null>(() => new URLSearchParams(location.hash.slice(1)).get('peek'))
   const hoverTimer = useRef<number | undefined>(undefined)
@@ -74,23 +81,24 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
   )
 
   const runLayout = useCallback(async (dir: Direction) => {
-    // ELK gets the circle + room for its label; React Flow gets the bare circle.
-    const box = LABEL_BOX[dir]
-    const sizes = new Map<string, { width: number; height: number }>()
-    const offset = new Map<string, { x: number; y: number }>()
+    // ELK gets the bare circle plus the size of its text label, which it keeps clear of edges.
+    const boxes = new Map<string, NodeBox>()
     for (const n of graph.nodes) {
       const d = DIAMETER[n.importance ?? 2]
+      const longest = Math.max(n.label.length * 8.4, 60)
       if (dir === 'RIGHT') {
-        const w = Math.max(box.w, d)
-        sizes.set(n.id, { width: w, height: d + box.h })
-        offset.set(n.id, { x: (w - d) / 2, y: 0 })
+        // a summary line wraps at 190px, so summarised nodes always need the full width
+        boxes.set(n.id, { d, labelW: n.summary ? 200 : Math.min(Math.max(longest, 120), 200), labelH: n.summary ? 96 : 44 })
       } else {
-        const h = Math.max(box.h, d)
-        sizes.set(n.id, { width: d + box.w, height: h })
-        offset.set(n.id, { x: 0, y: (h - d) / 2 })
+        boxes.set(n.id, { d, labelW: n.summary ? 236 : Math.min(Math.max(longest, 140), 236), labelH: Math.max(d, n.summary ? 84 : 36) })
       }
     }
-    const res = await layoutGraph(graph, sizes, dir)
+    const res = await layoutGraph(graph, boxes, dir)
+    const circ = new Map<string, Circle>()
+    for (const [id, p] of res.nodes) {
+      const d = boxes.get(id)!.d
+      circ.set(id, { cx: p.x + d / 2, cy: p.y + d / 2, r: d / 2 })
+    }
     const ranked = [...res.nodes.entries()].sort((a, b) => (dir === 'RIGHT' ? a[1].x - b[1].x || a[1].y - b[1].y : a[1].y - b[1].y || a[1].x - b[1].x))
     const order = new Map(ranked.map(([id], i) => [id, i]))
     const groupNodes: GroupFlowNode[] = (graph.groups ?? [])
@@ -108,10 +116,12 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
       ...groupNodes,
       ...prev.filter((n): n is CodeFlowNode => n.type === 'code').map((n) => {
         const p = res.nodes.get(n.id)
-        const o = offset.get(n.id)!
-        return { ...n, position: p ? { x: p.x + o.x, y: p.y + o.y } : n.position, data: { ...n.data, order: order.get(n.id) ?? 0 } }
+        return { ...n, position: p ?? n.position, data: { ...n.data, order: order.get(n.id) ?? 0 } }
       }),
     ])
+    setRoutes(res.edges)
+    setCircles(circ)
+    setMoved(new Set())
     requestAnimationFrame(() => {
       updateInternals(graph.nodes.map((n) => n.id))
       setLaidOut(true)
@@ -164,7 +174,7 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
     didInitialView.current = true
     if (initialFlow && graph.flows?.some((f) => f.id === initialFlow)) setFlowId(initialFlow)
     else if (initialNode && byId.has(initialNode)) focusNode(initialNode, 0)
-    else void rf.fitView({ padding: 0.1, duration: 0 })
+    else void rf.fitView({ padding: FIT_PADDING, duration: 0 })
   }, [laidOut, initialized, nodes, initialNode, initialFlow, byId, graph, focusNode, rf])
 
   // ---- tour ----
@@ -209,19 +219,23 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
       tourPairs.add(`${flow.steps[i].node}>${flow.steps[i + 1].node}`)
       tourPairs.add(`${flow.steps[i + 1].node}>${flow.steps[i].node}`)
     }
+    const lit = selectedId ?? hover
     return graph.edges.map((e, i) => {
       const kind = e.kind ?? 'calls'
-      const active = flow ? tourPairs.has(`${e.source}>${e.target}`) : selectedId ? e.source === selectedId || e.target === selectedId : false
+      const id = edgeId(e, i)
+      const active = flow ? tourPairs.has(`${e.source}>${e.target}`) : lit ? e.source === lit || e.target === lit : false
+      // hovering only emphasises a node's edges; selecting or touring also dims the rest
       const dim = (flow || selectedId) ? !active : false
+      const free = moved.has(e.source) || moved.has(e.target)
       return {
-        id: e.id ?? `e${i}`, source: e.source, target: e.target, type: 'flow',
+        id, source: e.source, target: e.target, type: 'flow',
         hidden: hiddenKinds.has(kind),
         zIndex: active ? 5 : 0,
         markerEnd: { type: MarkerType.ArrowClosed, color: EDGE_META[kind]?.color ?? '#888', width: 14, height: 14, markerUnits: 'userSpaceOnUse' },
-        data: { edge: e, active, dim },
+        data: { edge: e, active, dim, route: free ? undefined : routes.get(id), src: circles.get(e.source), tgt: circles.get(e.target) },
       }
     })
-  }, [graph, hiddenKinds, flow, selectedId])
+  }, [graph, hiddenKinds, flow, selectedId, hover, routes, circles, moved])
 
   // ---- interaction ----
   const onNodeClick: NodeMouseHandler<AnyNode> = (_, n) => { if (n.type === 'code') { setHover(null); select(n.id) } }
@@ -243,12 +257,13 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
       if (ev.key === 'Escape') { if (typing) (ev.target as HTMLElement).blur(); else if (flow) setFlowId(null); else select(null) }
       if (typing) return
       if (ev.key === '/') { ev.preventDefault(); searchRef.current?.focus() }
+      if ((ev.key === 'f' || ev.key === 'F') && !ev.metaKey && !ev.ctrlKey) void rf.fitView({ padding: FIT_PADDING, duration: 500 })
       if (flow && ev.key === 'ArrowRight') setStepIdx((i) => Math.min(i + 1, flow.steps.length - 1))
       if (flow && ev.key === 'ArrowLeft') setStepIdx((i) => Math.max(i - 1, 0))
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [flow, select])
+  }, [flow, select, rf])
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -273,6 +288,7 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
           onNodeDoubleClick={onNodeDoubleClick}
           onNodeMouseEnter={onNodeMouseEnter}
           onNodeMouseLeave={onNodeMouseLeave}
+          onNodeDragStart={(_, n) => { if (n.type === 'code' && !moved.has(n.id)) setMoved((m) => new Set(m).add(n.id)) }}
           onPaneClick={() => { if (!flow) select(null) }}
           minZoom={0.04}
           maxZoom={2.5}
@@ -287,8 +303,11 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
             pannable zoomable position="bottom-right"
             nodeColor={(n) => n.type === 'cluster' ? 'transparent' : resolveColor(KIND_META[(n as CodeFlowNode).data.node.kind]?.color ?? '#888')}
             nodeStrokeColor={(n) => n.type === 'cluster' ? resolveColor((n as GroupFlowNode).data.color) : 'transparent'}
-            maskColor="rgba(244,239,228,0.75)"
-            style={{ right: selected ? INSPECTOR_W : 0 }}
+            nodeBorderRadius={999}
+            maskColor={resolveColor('var(--minimap-mask)')}
+            key={theme}
+            ariaLabel="Minimap"
+            style={{ right: selected ? INSPECTOR_W : 0, width: 180, height: 120 }}
           />
 
           <Panel position="top-left" className="cf-toolbar">
@@ -307,18 +326,26 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
             <div className="cf-search">
               <Search size={14} />
               <input
-                ref={searchRef} value={query} placeholder="Search nodes  /"
-                onChange={(e) => setQuery(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && results[0]) { select(results[0].id, true); setQuery('') } }}
+                ref={searchRef} value={query} placeholder="Search nodes"
+                aria-label="Search nodes"
+                onChange={(e) => { setQuery(e.target.value); setCursor(0) }}
+                onKeyDown={(e) => {
+                  if (e.key === 'ArrowDown') { e.preventDefault(); setCursor((c) => Math.min(c + 1, results.length - 1)) }
+                  if (e.key === 'ArrowUp') { e.preventDefault(); setCursor((c) => Math.max(c - 1, 0)) }
+                  if (e.key === 'Enter' && results[cursor]) { select(results[cursor].id, true); setQuery(''); e.currentTarget.blur() }
+                }}
               />
-              {results.length > 0 && (
-                <ul className="cf-results">
-                  {results.map((r) => (
-                    <li key={r.id}>
-                      <button onClick={() => { select(r.id, true); setQuery('') }}>
+              {!query && <kbd className="cf-kbd">/</kbd>}
+              {query.trim() && (
+                <ul className="cf-results" role="listbox">
+                  {results.length === 0 && <li className="cf-results-empty">No nodes match “{query.trim()}”</li>}
+                  {results.map((r, i) => (
+                    <li key={r.id} role="option" aria-selected={i === cursor}>
+                      <button className={i === cursor ? 'on' : ''} onMouseEnter={() => setCursor(i)} onClick={() => { select(r.id, true); setQuery('') }}>
                         <span className="cf-dot" style={{ background: KIND_META[r.kind]?.color }} />
-                        <span>{r.label}</span>
-                        <small>{r.file}</small>
+                        <span className="cf-results-label">{r.label}</span>
+                        <em>{KIND_META[r.kind]?.label}</em>
+                        <small>{r.file?.split('/').pop()}</small>
                       </button>
                     </li>
                   ))}
@@ -326,11 +353,11 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
               )}
             </div>
             <div className="cf-seg">
-              <button className={direction === 'RIGHT' ? 'on' : ''} onClick={() => changeDirection('RIGHT')} title="Left → right"><ArrowRight size={14} /></button>
-              <button className={direction === 'DOWN' ? 'on' : ''} onClick={() => changeDirection('DOWN')} title="Top → bottom"><ArrowDown size={14} /></button>
+              <button className={direction === 'RIGHT' ? 'on' : ''} onClick={() => changeDirection('RIGHT')} title="Left → right" aria-label="Lay out left to right"><ArrowRight size={14} /></button>
+              <button className={direction === 'DOWN' ? 'on' : ''} onClick={() => changeDirection('DOWN')} title="Top → bottom" aria-label="Lay out top to bottom"><ArrowDown size={14} /></button>
             </div>
-            <button className="cf-icon-btn" title="Fit view" onClick={() => rf.fitView({ padding: 0.08, duration: 500 })}><Maximize size={14} /></button>
-            <button className="cf-icon-btn" title={theme === 'dark' ? 'Light mode' : 'Dark mode'} onClick={onToggleTheme}>{theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}</button>
+            <button className="cf-icon-btn" title="Fit view (F)" aria-label="Fit view" onClick={() => rf.fitView({ padding: FIT_PADDING, duration: 500 })}><Maximize size={14} /></button>
+            <button className="cf-icon-btn" title={theme === 'dark' ? 'Light mode' : 'Dark mode'} aria-label="Toggle theme" onClick={onToggleTheme}>{theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}</button>
           </Panel>
 
           {graph.flows?.length ? (
@@ -339,7 +366,7 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
               {graph.flows.map((f) => (
                 <button key={f.id} className={f.id === flowId ? 'on' : ''} onClick={() => (f.id === flowId ? setFlowId(null) : startFlow(f.id))} title={f.description}>
                   <span>{f.title}</span>
-                  <small>{f.steps.length} steps</small>
+                  <small>{f.steps.length} steps{f.id === flowId ? ' · playing' : ''}</small>
                 </button>
               ))}
             </Panel>
@@ -350,7 +377,7 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
               const m = EDGE_META[k]
               const off = hiddenKinds.has(k)
               return (
-                <button key={k} className={off ? 'off' : ''} onClick={() => setHiddenKinds((s) => { const n = new Set(s); if (off) n.delete(k); else n.add(k); return n })}>
+                <button key={k} className={off ? 'off' : ''} aria-pressed={!off} title={off ? `Show ${m.label} edges` : `Hide ${m.label} edges`} onClick={() => setHiddenKinds((s) => { const n = new Set(s); if (off) n.delete(k); else n.add(k); return n })}>
                   <svg width="22" height="8"><line x1="1" y1="4" x2="21" y2="4" stroke={m.color} strokeWidth="2" strokeDasharray={m.dash} /></svg>
                   {m.label}
                 </button>
@@ -363,7 +390,7 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
               <div className="cf-tour-head">
                 <span className="cf-tour-title">{flow.title}</span>
                 <span className="cf-tour-count">{stepIdx + 1} / {flow.steps.length}</span>
-                <button className="cf-icon-btn" onClick={() => setFlowId(null)} title="End tour (Esc)"><X size={14} /></button>
+                <button className="cf-icon-btn" onClick={() => setFlowId(null)} title="End tour (Esc)" aria-label="End tour"><X size={14} /></button>
               </div>
               <div className="cf-tour-body">
                 <strong>{byId.get(flow.steps[stepIdx].node)?.label}</strong>
@@ -372,7 +399,7 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
               <div className="cf-tour-nav">
                 <button disabled={stepIdx === 0} onClick={() => setStepIdx(stepIdx - 1)}><ChevronLeft size={14} /> prev</button>
                 <div className="cf-tour-dots">
-                  {flow.steps.map((_, i) => <button key={i} className={i === stepIdx ? 'on' : i < stepIdx ? 'done' : ''} onClick={() => setStepIdx(i)} />)}
+                  {flow.steps.map((_, i) => <button key={i} className={i === stepIdx ? 'on' : i < stepIdx ? 'done' : ''} onClick={() => setStepIdx(i)} aria-label={`Step ${i + 1}`} />)}
                 </div>
                 <button disabled={stepIdx === flow.steps.length - 1} onClick={() => setStepIdx(stepIdx + 1)}>next <ChevronRight size={14} /></button>
               </div>
@@ -382,7 +409,7 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
 
         {selected && <Inspector graph={graph} node={selected} onClose={() => select(null)} onNavigate={(id) => select(id, true)} />}
         {hover && hover !== selectedId && <HoverCard id={hover} graph={graph} onEnter={keepHover} onLeave={() => closeHover(120)} onOpen={(id) => { setHover(null); select(id) }} />}
-        {!laidOut && <div className="cf-loading">laying out graph…</div>}
+        {!laidOut && <div className="cf-loading"><span className="cf-spinner" />laying out graph…</div>}
       </div>
     </ViewContext.Provider>
   )
