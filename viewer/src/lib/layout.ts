@@ -149,7 +149,8 @@ export async function layoutGraph(
       id: EDGE_PREFIX + i,
       sources: [e.source],
       targets: [e.target],
-      labels: [{ text: e.label ?? '', ...edgeLabelSize(e), layoutOptions: { 'elk.edgeLabels.placement': 'CENTER' } }],
+      // same text the renderer shows (kind name when unlabelled); ELK skips empty labels
+      labels: [{ text: e.label ?? EDGE_META[e.kind ?? 'calls']?.label ?? 'edge', ...edgeLabelSize(e), layoutOptions: { 'elk.edgeLabels.placement': 'CENTER' } }],
     })
   }
 
@@ -186,8 +187,11 @@ export async function layoutGraph(
       const points = [s.startPoint, ...(s.bendPoints ?? []), s.endPoint].map((p) => ({ x: p.x, y: p.y }))
       const l = e.labels?.[0]
       let label = l && l.x !== undefined ? { x: l.x + (l.width ?? 0) / 2, y: (l.y ?? 0) + (l.height ?? 0) / 2 } : undefined
-      // ELK skips some labels (it leaves them at the container origin); keep a label only if it hugs the route
-      const labelPlaced = !!label && distToPolyline(label, points) <= (l?.height ?? 20) / 2 + 16
+      // ELK occasionally skips a label (leaving it at the container origin). Keep ELK's spot
+      // when the label *box* touches the route; measuring from the centre would reject wide
+      // pills sitting beside a vertical segment.
+      const labelPlaced = !!l && l.x !== undefined &&
+        rectDistToPolyline({ x: l.x, y: l.y ?? 0, w: l.width ?? 0, h: l.height ?? 0 }, points) <= 12
       if (!labelPlaced) label = fallbackLabelPoint(points, horizontal)
       const src = graph.edges[Number(e.id.slice(EDGE_PREFIX.length))]
       if (src) result.edges.set(edgeId(src, Number(e.id.slice(EDGE_PREFIX.length))), { points, label, labelPlaced })
@@ -198,13 +202,17 @@ export async function layoutGraph(
   return result
 }
 
-function distToPolyline(p: Point, pts: Point[]): number {
+/** Distance from a polyline to an axis-aligned rectangle (0 when they touch). */
+function rectDistToPolyline(r: { x: number; y: number; w: number; h: number }, pts: Point[]): number {
   let best = Infinity
+  const toRect = (p: Point) => Math.hypot(Math.max(r.x - p.x, 0, p.x - r.x - r.w), Math.max(r.y - p.y, 0, p.y - r.y - r.h))
   for (let i = 0; i < pts.length - 1; i++) {
     const a = pts[i], b = pts[i + 1]
-    const dx = b.x - a.x, dy = b.y - a.y
-    const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / (dx * dx + dy * dy || 1)))
-    best = Math.min(best, Math.hypot(p.x - a.x - t * dx, p.y - a.y - t * dy))
+    const steps = Math.max(1, Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 2))
+    for (let k = 0; k <= steps; k++) {
+      best = Math.min(best, toRect({ x: a.x + ((b.x - a.x) * k) / steps, y: a.y + ((b.y - a.y) * k) / steps }))
+      if (best === 0) return 0
+    }
   }
   return best
 }

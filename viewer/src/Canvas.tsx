@@ -22,6 +22,7 @@ type AnyNode = CodeFlowNode | GroupFlowNode
 const INSPECTOR_W = 560
 // keep fitted graphs clear of the toolbar, flows panel, legend and minimap
 const FIT_PADDING = { top: '96px', right: '72px', bottom: '84px', left: '72px' } as const
+const fitPadding = (inspectorOpen: boolean) => (inspectorOpen ? { ...FIT_PADDING, right: `${INSPECTOR_W + 48}px` as const } : FIT_PADDING)
 
 interface Props {
   graph: CodeGraph
@@ -142,6 +143,9 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
 
   const changeDirection = (d: Direction) => {
     setDirection(d)
+    const h = new URLSearchParams(location.hash.slice(1))
+    if (d === 'DOWN') h.set('dir', 'down'); else h.delete('dir')
+    history.replaceState(null, '', `#${h}`)
     void runLayout(d)
   }
 
@@ -274,13 +278,13 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
       if (ev.key === 'Escape') { if (typing) (ev.target as HTMLElement).blur(); else if (flow) setFlowId(null); else select(null) }
       if (typing) return
       if (ev.key === '/') { ev.preventDefault(); searchRef.current?.focus() }
-      if ((ev.key === 'f' || ev.key === 'F') && !ev.metaKey && !ev.ctrlKey && !ev.altKey) void rf.fitView({ padding: FIT_PADDING, duration: 500 })
+      if ((ev.key === 'f' || ev.key === 'F') && !ev.metaKey && !ev.ctrlKey && !ev.altKey) void rf.fitView({ padding: fitPadding(!!selectedId), duration: 500 })
       if (flow && ev.key === 'ArrowRight') setStepIdx((i) => Math.min(i + 1, flow.steps.length - 1))
       if (flow && ev.key === 'ArrowLeft') setStepIdx((i) => Math.max(i - 1, 0))
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [flow, select, rf])
+  }, [flow, select, rf, selectedId])
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase()
@@ -373,7 +377,7 @@ export function Canvas({ graph, graphIds, graphId, onGraphChange, initialNode, i
               <button className={direction === 'RIGHT' ? 'on' : ''} onClick={() => changeDirection('RIGHT')} title="Left → right" aria-label="Lay out left to right"><ArrowRight size={14} /></button>
               <button className={direction === 'DOWN' ? 'on' : ''} onClick={() => changeDirection('DOWN')} title="Top → bottom" aria-label="Lay out top to bottom"><ArrowDown size={14} /></button>
             </div>
-            <button className="cf-icon-btn" title="Fit view (F)" aria-label="Fit view" onClick={() => rf.fitView({ padding: FIT_PADDING, duration: 500 })}><Maximize size={14} /></button>
+            <button className="cf-icon-btn" title="Fit view (F)" aria-label="Fit view" onClick={() => rf.fitView({ padding: fitPadding(!!selectedId), duration: 500 })}><Maximize size={14} /></button>
             <button className="cf-icon-btn" title={theme === 'dark' ? 'Light mode' : 'Dark mode'} aria-label="Toggle theme" onClick={onToggleTheme}>{theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}</button>
           </Panel>
 

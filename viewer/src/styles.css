@@ -442,3 +442,6 @@ code { font-family: var(--mono); }
 .react-flow__minimap-mask { fill: color-mix(in srgb, var(--bg) 75%, transparent); }
 .cf-hover .cf-card { overflow: visible; }
 .cf-hover .cf-head { position: sticky; top: 0; z-index: 1; background: var(--card); border-radius: 6px 6px 0 0; }
+/* keyboard focus on a node: ring the circle, not the square node box */
+.react-flow__node-code:focus-visible { outline: none; }
+.react-flow__node-code:focus-visible .cf-orb-core { outline: 2px solid var(--focus); outline-offset: 4px; }
